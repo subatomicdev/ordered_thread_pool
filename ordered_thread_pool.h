@@ -3,14 +3,15 @@
 // This parallelizes jobs of type -
 //
 //   while (...) {
-//     UseResult(CostlyFn());
+//      CostlyFn(myArg);
 //   }
 //
 // To parallelize, use the following pattern -
 //
 //   pool = OrderedThreadPool{10};
-//   while (...) {
-//     pool.Do(CostlyFn, UseResult);
+//   while (...)
+//   {
+//     pool.Do(CostlyFn, myArg);
 //   }
 //
 // Properties -
@@ -30,10 +31,10 @@
 #include <thread>
 #include <vector>
 
-template <class ReturnType>
-class OrderedThreadPool {
-  using JobFnT = std::function<ReturnType()>;
-  using CompletionFnT = std::function<void(ReturnType)>;
+template <class ReturnType, class ArgType>
+class OrderedThreadPool
+{
+  using JobFnT = std::function<ReturnType(ArgType)>;
 
  public:
   /**
@@ -44,9 +45,10 @@ class OrderedThreadPool {
    * @param max_pending_jobs If the workers are all occupied, and this many jobs
    *   are in the queue, calling thread will be blocked till a worker is free.
    **/
-  OrderedThreadPool(int num_workers, int max_pending_jobs = 1)
-      : max_queue_size_(max_pending_jobs) {
-    for (int i = 0; i < num_workers; ++i) {
+  OrderedThreadPool(int num_workers, int max_pending_jobs = 1) : max_queue_size_(max_pending_jobs)
+  {
+    for (int i = 0; i < num_workers; ++i)
+    {
       workers_.push_back(std::thread(&OrderedThreadPool::Worker, this));
     }
   }
@@ -66,23 +68,23 @@ class OrderedThreadPool {
    * @param on_completion A function which will be called with the result of
    *   fn().
    **/
-  void Do(JobFnT fn, CompletionFnT on_completion) {
-    if (workers_.empty()) {
-      // Number of threads requested is 0. Run everything on main thread.
-      on_completion(fn());
-      return;
-    }
+  void Do(JobFnT fn, ArgType arg)
+  {
+
     // Push to the job queue and notify.
     std::unique_lock<std::mutex> lck(fn_queue_mtx_);
-    job_removed_.wait(lck, [this] {
+    job_removed_.wait(lck, [this]
+    {
       return max_queue_size_ == 0 || (int)fn_queue_.size() < max_queue_size_;
     });
-    fn_queue_.push(Job{
-        .job_fn = fn, .completion_fn = on_completion, .job_id = job_count_++});
+
+    fn_queue_.push( Job{.job_fn = fn, .job_id = job_count_++, .arg = std::move(arg)});
+
     job_added_.notify_one();
   }
 
-  virtual ~OrderedThreadPool() {
+  virtual ~OrderedThreadPool()
+  {
     terminate_now_ = true;
     {
       // Notify holding the lock.
@@ -91,28 +93,30 @@ class OrderedThreadPool {
       std::lock_guard<std::mutex> lck(fn_queue_mtx_);
       job_added_.notify_all();
     }
-    for (std::thread& t : workers_) {
+    
+    for (std::thread& t : workers_)
+    {
       t.join();
     }
   }
 
  private:
-  struct Job {
+  struct Job
+  {
     // A function which will be parallelized.
     JobFnT job_fn;
-    // A quick function. Output of job_fn will be passed to this method. All
-    // calls to this will happen in same order as enqueuing, and under a lock.
-    CompletionFnT completion_fn;
     // Internal ticket number. Used in waiting for previous jobs.
     size_t job_id;
+    // Argument for the JobFnT
+    ArgType arg;
   };
 
   // Blocks till a next job is available, or termination signal is received.
   // If termination is requested, returns empty.
-  std::optional<Job> NextJob() {
+  std::optional<Job> NextJob()
+  {
     std::unique_lock<std::mutex> lck(fn_queue_mtx_);
-    job_added_.wait(lck,
-                    [this] { return !fn_queue_.empty() || terminate_now_; });
+    job_added_.wait(lck, [this] { return !fn_queue_.empty() || terminate_now_; });
     // If requested to terminate, finish the entire queue and exit.
     if (terminate_now_ && fn_queue_.empty()) {
       return {};
@@ -123,24 +127,25 @@ class OrderedThreadPool {
     return result;
   }
 
-  void Worker() {
-    while (true) {
+  void Worker()
+  {
+    while (true)
+    {
       std::optional<Job> job_opt = NextJob();
-      if (!job_opt.has_value()) {
+      if (!job_opt.has_value())
+      {
         // This means the workers should terminate.
         return;
       }
       Job job = job_opt.value();
 
       // This runs parallelly across all threads.
-      ReturnType result = job.job_fn();
+      job.job_fn(job.arg);
 
       // Wait till our turn comes.
       std::unique_lock<std::mutex> lck(ticket_mtx_);
-      ticket_update_.wait(lck,
-                          [this, &job] { return ticket_num_ == job.job_id; });
-      // Perform the second part of the task.
-      job.completion_fn(result);
+      ticket_update_.wait(lck, [this, &job] { return ticket_num_ == job.job_id; });
+      
       // Update the next ticket and send a signal to other workers in line.
       ++ticket_num_;
       ticket_update_.notify_all();

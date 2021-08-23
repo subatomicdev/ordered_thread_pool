@@ -16,7 +16,6 @@
 //
 // Properties -
 // - All CostlyFn()'s are allowed to run in parallel.
-// - All UseResult()'s are called maintaining order of queuing.
 // - Avoids repeated thread creation by reusing threads.
 // - If workers are full, this blocks untill next one is free.
 // - On destruction blocks untill all pending work is finished.
@@ -31,10 +30,10 @@
 #include <thread>
 #include <vector>
 
-template <class ReturnType, class ArgType>
+template <class ArgType>
 class OrderedThreadPool
 {
-  using JobFnT = std::function<ReturnType(ArgType)>;
+  using JobFnT = std::function<void(ArgType)>;
 
  public:
   /**
@@ -95,9 +94,7 @@ class OrderedThreadPool
     }
     
     for (std::thread& t : workers_)
-    {
       t.join();
-    }
   }
 
  private:
@@ -164,7 +161,7 @@ class OrderedThreadPool
   size_t job_count_ = 0;
 
   // Ticket system to ensure chronological delivery of jobs. The next job
-  // with job_id matching this will proceed with completion_fn().
+  // with job_id matching this will proceed
   size_t ticket_num_ = 0;
   // The mutex to lock for second function.
   std::mutex ticket_mtx_;
